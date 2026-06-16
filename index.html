@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HECATOMBE - Mapa Cloud</title>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <style>
+        :root {
+            --dark-bg: #121212;
+            --cherry-red: #9b111e;
+            --dark-red: #5e0b13;
+            --text-color: #e0e0e0;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            background-color: var(--dark-bg);
+            color: var(--text-color);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+        }
+		
+		#logo-container {
+            position: absolute;
+            top: 20px;
+            left: 40px;
+            z-index: 1000;
+            pointer-events: none;
+        }
+
+        .rpg-logo {
+            width: 250px;
+            height: auto;
+            filter: drop-shadow(0 0 8px rgba(155, 17, 30, 0.8));
+            opacity: 0.9;
+            transition: opacity 0.3s;
+        }
+
+        #map {
+            height: 100vh;
+            width: 100vw;
+            background: radial-gradient(circle, #1a1a1a 0%, #050505 100%);
+        }
+
+        .leaflet-popup-content-wrapper {
+            background: var(--dark-bg);
+            color: var(--text-color);
+            border: 2px solid var(--cherry-red);
+            border-radius: 5px;
+        }
+
+        .leaflet-popup-tip {
+            background: var(--cherry-red);
+        }
+
+        .popup-form {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            min-width: 180px;
+        }
+
+        .popup-form label {
+            font-size: 11px;
+            color: #bbb;
+            margin-bottom: -5px;
+        }
+
+        .btn-save, .btn-delete {
+            color: white;
+            border: none;
+            padding: 8px;
+            cursor: pointer;
+            margin-top: 5px;
+            width: 100%;
+            font-weight: bold;
+            transition: 0.3s;
+        }
+
+        .btn-save { background-color: var(--cherry-red); }
+        .btn-save:hover { background-color: var(--dark-red); }
+
+        .btn-delete { 
+            background-color: #444; 
+            font-size: 10px;
+            margin-top: 10px;
+        }
+        .btn-delete:hover { background-color: #cc0000; }
+
+        input[type="text"], input[type="number"], input[type="color"] {
+            background: #222;
+            border: 1px solid var(--cherry-red);
+            color: white;
+            padding: 5px;
+            border-radius: 3px;
+        }
+
+        @media (max-width: 600px) {
+            .rpg-logo { width: 150px; }
+        }
+    </style>
+</head>
+<body>
+
+<div id="logo-container">
+    <img src="HECATOMBE - Logo sem Brilho.png" alt="Logo RPG" class="rpg-logo">
+</div>
+<div id="map"></div>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script type="module">
+    // Importando Firebase SDK
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+    import { getDatabase, ref, push, onChildAdded, onChildRemoved, remove } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+
+    // Sua configuração fornecida
+    const firebaseConfig = {
+        apiKey: "AIzaSyB5t1xP9MKomW_x2zSdMH7GPy19n7eUPjw",
+        authDomain: "mapahecatombe.firebaseapp.com",
+        databaseURL: "https://mapahecatombe-default-rtdb.firebaseio.com",
+        projectId: "mapahecatombe",
+        storageBucket: "mapahecatombe.firebasestorage.app",
+        messagingSenderId: "706308041473",
+        appId: "1:706308041473:web:d606b72b2dc82a88474900",
+        measurementId: "G-HXRZJKRW8Q"
+    };
+
+    // Inicializa Firebase
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+    const markersRef = ref(db, 'markers');
+
+    // Configuração do Mapa Leaflet
+    const mapImage = "Mapa Mãe.png";
+    const w = 2048; 
+    const h = 1536; 
+
+    const map = L.map('map', {
+        crs: L.CRS.Simple,
+        minZoom: -1,
+        maxZoom: 2
+    });
+
+    const southWest = map.unproject([0, h], map.getMaxZoom() - 1);
+    const northEast = map.unproject([w, 0], map.getMaxZoom() - 1);
+    const bounds = new L.LatLngBounds(southWest, northEast);
+
+    L.imageOverlay(mapImage, bounds).addTo(map);
+    map.setMaxBounds(bounds);
+    map.fitBounds(bounds);
+
+    let markerInstances = {}; 
+
+    function createCustomIcon(color, size) {
+        const s = size || 12;
+        const c = color || '#9b111e';
+        return L.divIcon({
+            html: `<div style="background-color: ${c}; width: ${s}px; height: ${s}px; border: 2px solid white; border-radius: 50%; box-shadow: 0 0 8px ${c};"></div>`,
+            className: 'custom-div-icon',
+            iconSize: [s, s],
+            iconAnchor: [s/2, s/2]
+        });
+    }
+
+    // --- SINCRONIZAÇÃO EM TEMPO REAL ---
+
+    // Escuta quando um novo marcador é adicionado no Firebase
+    onChildAdded(markersRef, (snapshot) => {
+        const data = snapshot.val();
+        const id = snapshot.key; // ID único do Firebase
+        
+        const icon = createCustomIcon(data.color, data.size);
+        const m = L.marker([data.lat, data.lng], {icon: icon}).addTo(map);
+        
+        const popupHtml = `
+            <div style="text-align: center;">
+                <b style="color: var(--cherry-red); font-size: 16px;">${data.name}</b><br>
+                <p style="margin: 5px 0;">${data.desc}</p>
+                <button class="btn-delete" onclick="window.deletePoint('${id}')">Remover Marcador</button>
+            </div>
+        `;
+        
+        m.bindPopup(popupHtml);
+        markerInstances[id] = m;
+    });
+
+    // Escuta quando um marcador é removido no Firebase
+    onChildRemoved(markersRef, (snapshot) => {
+        const id = snapshot.key;
+        if (markerInstances[id]) {
+            map.removeLayer(markerInstances[id]);
+            delete markerInstances[id];
+        }
+    });
+
+    // --- FUNÇÕES GLOBAIS ---
+
+    map.on('click', function(e) {
+        const coord = e.latlng;
+        const popupContent = `
+            <div class="popup-form">
+                <label>Nome do Local:</label>
+                <input type="text" id="locName" placeholder="Ex: Acampamento">
+                
+                <label>Notas:</label>
+                <input type="text" id="locDesc" placeholder="O que há aqui?">
+                
+                <div style="display: flex; gap: 10px;">
+                    <div style="flex: 1;">
+                        <label>Cor:</label><br>
+                        <input type="color" id="locColor" value="#9b111e" style="width: 100%; height: 30px;">
+                    </div>
+                    <div style="flex: 1;">
+                        <label>Tam.:</label><br>
+                        <input type="number" id="locSize" value="12" min="5" max="50" style="width: 100%;">
+                    </div>
+                </div>
+
+                <button class="btn-save" id="btnSaveTemp">Salvar Ponto</button>
+            </div>
+        `;
+
+        const popup = L.popup()
+            .setLatLng(coord)
+            .setContent(popupContent)
+            .openOn(map);
+
+        // Adiciona evento ao botão de salvar dentro do popup
+        document.getElementById('btnSaveTemp').onclick = () => {
+            savePoint(coord.lat, coord.lng);
+        };
+    });
+
+    function savePoint(lat, lng) {
+        const name = document.getElementById('locName').value;
+        const desc = document.getElementById('locDesc').value;
+        const color = document.getElementById('locColor').value;
+        const size = document.getElementById('locSize').value;
+
+        if (name) {
+            // Salva no Firebase (o onChildAdded cuidará de colocar no mapa)
+            push(markersRef, {
+                lat, 
+                lng, 
+                name, 
+                desc, 
+                color, 
+                size: parseInt(size)
+            });
+            map.closePopup();
+        } else {
+            alert("Dê um nome ao local!");
+        }
+    }
+
+    // Função para deletar (Exposta ao window para o onclick do popup funcionar)
+    window.deletePoint = function(id) {
+        if (confirm("Deseja realmente apagar este marcador para todos?")) {
+            const itemRef = ref(db, `markers/${id}`);
+            remove(itemRef);
+        }
+    };
+
+</script>
+</body>
+</html>
