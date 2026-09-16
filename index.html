@@ -7,6 +7,8 @@
     
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- Leaflet Draw CSS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
     
     <style>
         :root {
@@ -29,7 +31,7 @@
 		#logo-container {
             position: absolute;
             top: 20px;
-            left: 40px;
+            left: 60px; /* Ajustado para não sobrepor a barra de desenho */
             z-index: 1000;
             pointer-events: none;
         }
@@ -72,7 +74,7 @@
             margin-bottom: -5px;
         }
 
-        .btn-save, .btn-delete {
+        .btn-save, .btn-edit, .btn-delete {
             color: white;
             border: none;
             padding: 8px;
@@ -81,16 +83,16 @@
             width: 100%;
             font-weight: bold;
             transition: 0.3s;
+            border-radius: 3px;
         }
 
         .btn-save { background-color: var(--cherry-red); }
         .btn-save:hover { background-color: var(--dark-red); }
 
-        .btn-delete { 
-            background-color: #444; 
-            font-size: 10px;
-            margin-top: 10px;
-        }
+        .btn-edit { background-color: #555; margin-top: 10px; }
+        .btn-edit:hover { background-color: #777; }
+
+        .btn-delete { background-color: #444; font-size: 10px; }
         .btn-delete:hover { background-color: #cc0000; }
 
         input[type="text"], input[type="number"], input[type="color"] {
@@ -101,8 +103,53 @@
             border-radius: 3px;
         }
 
+        /* Toolbar Customizada para Modo de Clique */
+        .custom-toolbar {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            background: var(--dark-bg);
+            padding: 8px;
+            border: 2px solid var(--cherry-red);
+            border-radius: 5px;
+            display: flex;
+            gap: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.5);
+        }
+
+        .custom-toolbar button {
+            background: #222;
+            color: white;
+            border: 1px solid #444;
+            padding: 8px 15px;
+            cursor: pointer;
+            border-radius: 3px;
+            font-weight: bold;
+            transition: 0.3s;
+        }
+
+        .custom-toolbar button.active {
+            background: var(--cherry-red);
+            border-color: var(--dark-red);
+        }
+
+        /* Ícone de Texto no Mapa */
+        .custom-text-icon {
+            color: white;
+            font-weight: bold;
+            white-space: nowrap;
+            text-shadow: 2px 2px 4px #000, -2px -2px 4px #000, 2px -2px 4px #000, -2px 2px 4px #000;
+            background: transparent;
+            border: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
         @media (max-width: 600px) {
             .rpg-logo { width: 150px; }
+            .custom-toolbar { top: auto; bottom: 20px; right: 50%; transform: translateX(50%); }
         }
     </style>
 </head>
@@ -111,17 +158,22 @@
 <div id="logo-container">
     <img src="HECATOMBE - Logo sem Brilho.png" alt="Logo RPG" class="rpg-logo">
 </div>
+
+<div class="custom-toolbar">
+    <button id="btnModeMarker" class="active" onclick="window.setMode('marker')">Marcador</button>
+    <button id="btnModeText" onclick="window.setMode('text')">Texto</button>
+</div>
+
 <div id="map"></div>
 
-<!-- Leaflet JS -->
+<!-- Leaflet JS & Draw JS -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
 
 <script type="module">
-    // Importando Firebase SDK
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-    import { getDatabase, ref, push, onChildAdded, onChildRemoved, remove } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+    import { getDatabase, ref, push, onChildAdded, onChildRemoved, onChildChanged, remove, update } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
 
-    // Sua configuração fornecida
     const firebaseConfig = {
         apiKey: "AIzaSyB5t1xP9MKomW_x2zSdMH7GPy19n7eUPjw",
         authDomain: "mapahecatombe.firebaseapp.com",
@@ -133,12 +185,15 @@
         measurementId: "G-HXRZJKRW8Q"
     };
 
-    // Inicializa Firebase
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
+    
+    // Referências do Firebase
     const markersRef = ref(db, 'markers');
+    const textsRef = ref(db, 'texts');
+    const regionsRef = ref(db, 'regions');
 
-    // Configuração do Mapa Leaflet
+    // Configuração do Mapa
     const mapImage = "Mapa Mãe.png";
     const w = 2048; 
     const h = 1536; 
@@ -157,117 +212,337 @@
     map.setMaxBounds(bounds);
     map.fitBounds(bounds);
 
-    let markerInstances = {}; 
+    // Variáveis de Estado
+    let clickMode = 'marker'; // 'marker' ou 'text'
+    let isDrawing = false; // Previne cliques acidentais enquanto desenha regiões
 
-    function createCustomIcon(color, size) {
-        const s = size || 12;
-        const c = color || '#9b111e';
-        return L.divIcon({
-            html: `<div style="background-color: ${c}; width: ${s}px; height: ${s}px; border: 2px solid white; border-radius: 50%; box-shadow: 0 0 8px ${c};"></div>`,
-            className: 'custom-div-icon',
-            iconSize: [s, s],
-            iconAnchor: [s/2, s/2]
-        });
-    }
+    // Armazenamento Local
+    let markerInstances = {}; window.markerData = {};
+    let textInstances = {}; window.textData = {};
+    let regionInstances = {}; window.regionData = {};
 
-    // --- SINCRONIZAÇÃO EM TEMPO REAL ---
+    // --- CONTROLE DE MODOS ---
+    window.setMode = function(mode) {
+        clickMode = mode;
+        document.getElementById('btnModeMarker').classList.remove('active');
+        document.getElementById('btnModeText').classList.remove('active');
+        if(mode === 'marker') document.getElementById('btnModeMarker').classList.add('active');
+        if(mode === 'text') document.getElementById('btnModeText').classList.add('active');
+    };
 
-    // Escuta quando um novo marcador é adicionado no Firebase
-    onChildAdded(markersRef, (snapshot) => {
-        const data = snapshot.val();
-        const id = snapshot.key; // ID único do Firebase
+    // --- FERRAMENTA DE DESENHO (Leaflet.draw) ---
+    const drawnItems = new L.FeatureGroup();
+    map.addLayer(drawnItems);
+
+    const drawControl = new L.Control.Draw({
+        draw: {
+            polyline: false,
+            polygon: { allowIntersection: false, shapeOptions: { color: '#9b111e' } },
+            rectangle: { shapeOptions: { color: '#9b111e' } },
+            circle: false,
+            marker: false,
+            circlemarker: false
+        },
+        edit: false // Edição será feita via popup customizado
+    });
+    map.addControl(drawControl);
+
+    map.on('draw:drawstart', () => isDrawing = true);
+    map.on('draw:drawstop', () => setTimeout(() => isDrawing = false, 100));
+
+    map.on(L.Draw.Event.CREATED, function (e) {
+        const type = e.layerType;
+        const layer = e.layer;
+        const latlngs = layer.getLatLngs();
         
-        const icon = createCustomIcon(data.color, data.size);
-        const m = L.marker([data.lat, data.lng], {icon: icon}).addTo(map);
-        
-        const popupHtml = `
-            <div style="text-align: center;">
-                <b style="color: var(--cherry-red); font-size: 16px;">${data.name}</b><br>
-                <p style="margin: 5px 0;">${data.desc}</p>
-                <button class="btn-delete" onclick="window.deletePoint('${id}')">Remover Marcador</button>
+        map.addLayer(layer); // Adiciona temporariamente para mostrar o popup
+        window.tempRegionLayer = layer;
+        window.tempRegionData = { type, latlngs };
+
+        const popupContent = `
+            <div class="popup-form">
+                <label>Nome da Região:</label>
+                <input type="text" id="regNameTemp" placeholder="Ex: Floresta Sombria">
+                <label>Cor:</label>
+                <input type="color" id="regColorTemp" value="#9b111e">
+                <button class="btn-save" onclick="window.saveNewRegion()">Salvar Região</button>
+                <button class="btn-delete" onclick="window.cancelNewRegion()">Cancelar</button>
             </div>
         `;
-        
-        m.bindPopup(popupHtml);
-        markerInstances[id] = m;
+        layer.bindPopup(popupContent).openPopup();
     });
 
-    // Escuta quando um marcador é removido no Firebase
-    onChildRemoved(markersRef, (snapshot) => {
-        const id = snapshot.key;
-        if (markerInstances[id]) {
-            map.removeLayer(markerInstances[id]);
-            delete markerInstances[id];
+    window.saveNewRegion = function() {
+        const name = document.getElementById('regNameTemp').value;
+        const color = document.getElementById('regColorTemp').value;
+        if(name) {
+            push(regionsRef, { ...window.tempRegionData, name, color });
+            map.removeLayer(window.tempRegionLayer);
+        } else {
+            alert("Dê um nome à região!");
+        }
+    };
+
+    window.cancelNewRegion = function() {
+        map.removeLayer(window.tempRegionLayer);
+    };
+
+    // --- CLIQUES NO MAPA (Marcadores e Textos) ---
+    map.on('click', function(e) {
+        if (isDrawing) return;
+        const coord = e.latlng;
+
+        if (clickMode === 'marker') {
+            const popupContent = `
+                <div class="popup-form">
+                    <label>Nome do Local:</label>
+                    <input type="text" id="locName" placeholder="Ex: Acampamento">
+                    <label>Notas:</label>
+                    <input type="text" id="locDesc" placeholder="O que há aqui?">
+                    <div style="display: flex; gap: 10px;">
+                        <div style="flex: 1;"><label>Cor:</label><br><input type="color" id="locColor" value="#9b111e" style="width: 100%; height: 30px;"></div>
+                        <div style="flex: 1;"><label>Tam.:</label><br><input type="number" id="locSize" value="12" min="5" max="50" style="width: 100%;"></div>
+                    </div>
+                    <button class="btn-save" onclick="window.savePoint(${coord.lat}, ${coord.lng})">Salvar Ponto</button>
+                </div>
+            `;
+            L.popup().setLatLng(coord).setContent(popupContent).openOn(map);
+        } 
+        else if (clickMode === 'text') {
+            const popupContent = `
+                <div class="popup-form">
+                    <label>Texto:</label>
+                    <input type="text" id="txtValue" placeholder="Ex: Mar do Norte">
+                    <div style="display: flex; gap: 10px;">
+                        <div style="flex: 1;"><label>Cor:</label><br><input type="color" id="txtColor" value="#ffffff" style="width: 100%; height: 30px;"></div>
+                        <div style="flex: 1;"><label>Tam.:</label><br><input type="number" id="txtSize" value="20" min="10" max="100" style="width: 100%;"></div>
+                    </div>
+                    <button class="btn-save" onclick="window.saveText(${coord.lat}, ${coord.lng})">Salvar Texto</button>
+                </div>
+            `;
+            L.popup().setLatLng(coord).setContent(popupContent).openOn(map);
         }
     });
 
-    // --- FUNÇÕES GLOBAIS ---
-
-    map.on('click', function(e) {
-        const coord = e.latlng;
-        const popupContent = `
-            <div class="popup-form">
-                <label>Nome do Local:</label>
-                <input type="text" id="locName" placeholder="Ex: Acampamento">
-                
-                <label>Notas:</label>
-                <input type="text" id="locDesc" placeholder="O que há aqui?">
-                
-                <div style="display: flex; gap: 10px;">
-                    <div style="flex: 1;">
-                        <label>Cor:</label><br>
-                        <input type="color" id="locColor" value="#9b111e" style="width: 100%; height: 30px;">
-                    </div>
-                    <div style="flex: 1;">
-                        <label>Tam.:</label><br>
-                        <input type="number" id="locSize" value="12" min="5" max="50" style="width: 100%;">
-                    </div>
-                </div>
-
-                <button class="btn-save" id="btnSaveTemp">Salvar Ponto</button>
-            </div>
-        `;
-
-        const popup = L.popup()
-            .setLatLng(coord)
-            .setContent(popupContent)
-            .openOn(map);
-
-        // Adiciona evento ao botão de salvar dentro do popup
-        document.getElementById('btnSaveTemp').onclick = () => {
-            savePoint(coord.lat, coord.lng);
-        };
-    });
-
-    function savePoint(lat, lng) {
+    window.savePoint = function(lat, lng) {
         const name = document.getElementById('locName').value;
         const desc = document.getElementById('locDesc').value;
         const color = document.getElementById('locColor').value;
         const size = document.getElementById('locSize').value;
-
         if (name) {
-            // Salva no Firebase (o onChildAdded cuidará de colocar no mapa)
-            push(markersRef, {
-                lat, 
-                lng, 
-                name, 
-                desc, 
-                color, 
-                size: parseInt(size)
-            });
+            push(markersRef, { lat, lng, name, desc, color, size: parseInt(size) });
             map.closePopup();
-        } else {
-            alert("Dê um nome ao local!");
-        }
-    }
-
-    // Função para deletar (Exposta ao window para o onclick do popup funcionar)
-    window.deletePoint = function(id) {
-        if (confirm("Deseja realmente apagar este marcador para todos?")) {
-            const itemRef = ref(db, `markers/${id}`);
-            remove(itemRef);
         }
     };
+
+    window.saveText = function(lat, lng) {
+        const text = document.getElementById('txtValue').value;
+        const color = document.getElementById('txtColor').value;
+        const size = document.getElementById('txtSize').value;
+        if (text) {
+            push(textsRef, { lat, lng, text, color, size: parseInt(size) });
+            map.closePopup();
+        }
+    };
+
+    // --- FUNÇÕES DE RENDERIZAÇÃO E EDIÇÃO ---
+
+    function createCustomIcon(color, size) {
+        const s = size || 12;
+        return L.divIcon({
+            html: `<div style="background-color: ${color}; width: ${s}px; height: ${s}px; border: 2px solid white; border-radius: 50%; box-shadow: 0 0 8px ${color};"></div>`,
+            className: 'custom-div-icon', iconSize: [s, s], iconAnchor: [s/2, s/2]
+        });
+    }
+
+    // 1. MARCADORES
+    window.viewMarker = function(id) {
+        const data = window.markerData[id];
+        return `
+            <div style="text-align: center;">
+                <b style="color: ${data.color}; font-size: 16px;">${data.name}</b><br>
+                <p style="margin: 5px 0;">${data.desc}</p>
+                <button class="btn-edit" onclick="window.editMarkerForm('${id}')">Editar</button>
+                <button class="btn-delete" onclick="window.deleteItem('markers', '${id}')">Remover</button>
+            </div>
+        `;
+    };
+
+    window.editMarkerForm = function(id) {
+        const data = window.markerData[id];
+        const form = `
+            <div class="popup-form">
+                <label>Nome:</label><input type="text" id="editMName_${id}" value="${data.name}">
+                <label>Notas:</label><input type="text" id="editMDesc_${id}" value="${data.desc}">
+                <div style="display: flex; gap: 10px;">
+                    <div style="flex: 1;"><label>Cor:</label><input type="color" id="editMColor_${id}" value="${data.color}" style="width: 100%; height: 30px;"></div>
+                    <div style="flex: 1;"><label>Tam.:</label><input type="number" id="editMSize_${id}" value="${data.size}" style="width: 100%;"></div>
+                </div>
+                <button class="btn-save" onclick="window.saveMarkerEdit('${id}')">Salvar</button>
+                <button class="btn-delete" onclick="markerInstances['${id}'].setPopupContent(window.viewMarker('${id}'))">Cancelar</button>
+            </div>
+        `;
+        markerInstances[id].setPopupContent(form);
+    };
+
+    window.saveMarkerEdit = function(id) {
+        update(ref(db, `markers/${id}`), {
+            name: document.getElementById(`editMName_${id}`).value,
+            desc: document.getElementById(`editMDesc_${id}`).value,
+            color: document.getElementById(`editMColor_${id}`).value,
+            size: parseInt(document.getElementById(`editMSize_${id}`).value)
+        });
+    };
+
+    // 2. TEXTOS
+    window.viewText = function(id) {
+        const data = window.textData[id];
+        return `
+            <div style="text-align: center;">
+                <b style="color: ${data.color}; font-size: 16px;">${data.text}</b><br>
+                <button class="btn-edit" onclick="window.editTextForm('${id}')">Editar</button>
+                <button class="btn-delete" onclick="window.deleteItem('texts', '${id}')">Remover</button>
+            </div>
+        `;
+    };
+
+    window.editTextForm = function(id) {
+        const data = window.textData[id];
+        const form = `
+            <div class="popup-form">
+                <label>Texto:</label><input type="text" id="editTText_${id}" value="${data.text}">
+                <div style="display: flex; gap: 10px;">
+                    <div style="flex: 1;"><label>Cor:</label><input type="color" id="editTColor_${id}" value="${data.color}" style="width: 100%; height: 30px;"></div>
+                    <div style="flex: 1;"><label>Tam.:</label><input type="number" id="editTSize_${id}" value="${data.size}" style="width: 100%;"></div>
+                </div>
+                <button class="btn-save" onclick="window.saveTextEdit('${id}')">Salvar</button>
+                <button class="btn-delete" onclick="textInstances['${id}'].setPopupContent(window.viewText('${id}'))">Cancelar</button>
+            </div>
+        `;
+        textInstances[id].setPopupContent(form);
+    };
+
+    window.saveTextEdit = function(id) {
+        update(ref(db, `texts/${id}`), {
+            text: document.getElementById(`editTText_${id}`).value,
+            color: document.getElementById(`editTColor_${id}`).value,
+            size: parseInt(document.getElementById(`editTSize_${id}`).value)
+        });
+    };
+
+    // 3. REGIÕES
+    window.viewRegion = function(id) {
+        const data = window.regionData[id];
+        return `
+            <div style="text-align: center;">
+                <b style="color: ${data.color}; font-size: 16px;">${data.name}</b><br>
+                <button class="btn-edit" onclick="window.editRegionForm('${id}')">Editar</button>
+                <button class="btn-delete" onclick="window.deleteItem('regions', '${id}')">Remover</button>
+            </div>
+        `;
+    };
+
+    window.editRegionForm = function(id) {
+        const data = window.regionData[id];
+        const form = `
+            <div class="popup-form">
+                <label>Nome:</label><input type="text" id="editRName_${id}" value="${data.name}">
+                <label>Cor:</label><input type="color" id="editRColor_${id}" value="${data.color}" style="width: 100%; height: 30px;">
+                <button class="btn-save" onclick="window.saveRegionEdit('${id}')">Salvar</button>
+                <button class="btn-delete" onclick="regionInstances['${id}'].setPopupContent(window.viewRegion('${id}'))">Cancelar</button>
+            </div>
+        `;
+        regionInstances[id].setPopupContent(form);
+    };
+
+    window.saveRegionEdit = function(id) {
+        update(ref(db, `regions/${id}`), {
+            name: document.getElementById(`editRName_${id}`).value,
+            color: document.getElementById(`editRColor_${id}`).value
+        });
+    };
+
+    // Função Global de Deleção
+    window.deleteItem = function(path, id) {
+        if (confirm("Deseja realmente apagar este item para todos?")) {
+            remove(ref(db, `${path}/${id}`));
+        }
+    };
+
+
+    // --- SINCRONIZAÇÃO FIREBASE (LISTENERS) ---
+
+    // Listeners de Marcadores
+    onChildAdded(markersRef, (snapshot) => {
+        const id = snapshot.key; const data = snapshot.val(); window.markerData[id] = data;
+        const m = L.marker([data.lat, data.lng], {icon: createCustomIcon(data.color, data.size)}).addTo(map);
+        m.bindPopup(window.viewMarker(id));
+        markerInstances[id] = m;
+    });
+    onChildChanged(markersRef, (snapshot) => {
+        const id = snapshot.key; const data = snapshot.val(); window.markerData[id] = data;
+        if (markerInstances[id]) {
+            markerInstances[id].setIcon(createCustomIcon(data.color, data.size));
+            markerInstances[id].setPopupContent(window.viewMarker(id));
+        }
+    });
+    onChildRemoved(markersRef, (snapshot) => {
+        const id = snapshot.key;
+        if (markerInstances[id]) { map.removeLayer(markerInstances[id]); delete markerInstances[id]; delete window.markerData[id]; }
+    });
+
+    // Listeners de Textos
+    onChildAdded(textsRef, (snapshot) => {
+        const id = snapshot.key; const data = snapshot.val(); window.textData[id] = data;
+        const icon = L.divIcon({
+            className: 'custom-text-icon',
+            html: `<div style="color: ${data.color}; font-size: ${data.size}px;">${data.text}</div>`,
+            iconSize: [0, 0]
+        });
+        const m = L.marker([data.lat, data.lng], {icon: icon}).addTo(map);
+        m.bindPopup(window.viewText(id));
+        textInstances[id] = m;
+    });
+    onChildChanged(textsRef, (snapshot) => {
+        const id = snapshot.key; const data = snapshot.val(); window.textData[id] = data;
+        if (textInstances[id]) {
+            textInstances[id].setIcon(L.divIcon({
+                className: 'custom-text-icon',
+                html: `<div style="color: ${data.color}; font-size: ${data.size}px;">${data.text}</div>`,
+                iconSize: [0, 0]
+            }));
+            textInstances[id].setPopupContent(window.viewText(id));
+        }
+    });
+    onChildRemoved(textsRef, (snapshot) => {
+        const id = snapshot.key;
+        if (textInstances[id]) { map.removeLayer(textInstances[id]); delete textInstances[id]; delete window.textData[id]; }
+    });
+
+    // Listeners de Regiões
+    onChildAdded(regionsRef, (snapshot) => {
+        const id = snapshot.key; const data = snapshot.val(); window.regionData[id] = data;
+        let layer;
+        if (data.type === 'polygon' || data.type === 'rectangle') {
+            layer = L.polygon(data.latlngs, { color: data.color, fillColor: data.color, fillOpacity: 0.3 });
+        }
+        if (layer) {
+            layer.addTo(map);
+            layer.bindPopup(window.viewRegion(id));
+            regionInstances[id] = layer;
+        }
+    });
+    onChildChanged(regionsRef, (snapshot) => {
+        const id = snapshot.key; const data = snapshot.val(); window.regionData[id] = data;
+        if (regionInstances[id]) {
+            regionInstances[id].setStyle({ color: data.color, fillColor: data.color });
+            regionInstances[id].setPopupContent(window.viewRegion(id));
+        }
+    });
+    onChildRemoved(regionsRef, (snapshot) => {
+        const id = snapshot.key;
+        if (regionInstances[id]) { map.removeLayer(regionInstances[id]); delete regionInstances[id]; delete window.regionData[id]; }
+    });
 
 </script>
 </body>
