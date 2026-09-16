@@ -31,7 +31,7 @@
 		#logo-container {
             position: absolute;
             top: 20px;
-            left: 60px; /* Ajustado para não sobrepor a barra de desenho */
+            left: 60px;
             z-index: 1000;
             pointer-events: none;
         }
@@ -147,6 +147,20 @@
             justify-content: center;
         }
 
+        /* Tooltip da Régua */
+        .ruler-tooltip {
+            background: rgba(0, 0, 0, 0.8);
+            border: 1px solid #ffcc00;
+            color: #ffcc00;
+            font-weight: bold;
+            font-size: 14px;
+            box-shadow: 0 0 5px rgba(0,0,0,0.8);
+            border-radius: 4px;
+        }
+        .ruler-tooltip::before {
+            display: none;
+        }
+
         @media (max-width: 600px) {
             .rpg-logo { width: 150px; }
             .custom-toolbar { top: auto; bottom: 20px; right: 50%; transform: translateX(50%); }
@@ -162,6 +176,7 @@
 <div class="custom-toolbar">
     <button id="btnModeMarker" class="active" onclick="window.setMode('marker')">Marcador</button>
     <button id="btnModeText" onclick="window.setMode('text')">Texto</button>
+    <button id="btnModeRuler" onclick="window.setMode('ruler')">Régua</button>
 </div>
 
 <div id="map"></div>
@@ -213,8 +228,15 @@
     map.fitBounds(bounds);
 
     // Variáveis de Estado
-    let clickMode = 'marker'; // 'marker' ou 'text'
+    let clickMode = 'marker'; // 'marker', 'text' ou 'ruler'
     let isDrawing = false; // Previne cliques acidentais enquanto desenha regiões
+
+    // Variáveis da Régua
+    let rulerStart = null;
+    let rulerLine = null;
+    let rulerLabel = null;
+    // Fator de conversão: 1:50.000 -> 1cm = 0.5km. Em 96 DPI, 1cm = ~37.8px. Logo, 1km = ~75.6px.
+    const PIXELS_PER_KM = 7.56; 
 
     // Armazenamento Local
     let markerInstances = {}; window.markerData = {};
@@ -226,9 +248,25 @@
         clickMode = mode;
         document.getElementById('btnModeMarker').classList.remove('active');
         document.getElementById('btnModeText').classList.remove('active');
+        document.getElementById('btnModeRuler').classList.remove('active');
+        
         if(mode === 'marker') document.getElementById('btnModeMarker').classList.add('active');
         if(mode === 'text') document.getElementById('btnModeText').classList.add('active');
+        if(mode === 'ruler') document.getElementById('btnModeRuler').classList.add('active');
+
+        // Limpa a régua se sair do modo
+        if (mode !== 'ruler') {
+            clearRuler();
+        }
     };
+
+    function clearRuler() {
+        if (rulerLine) map.removeLayer(rulerLine);
+        if (rulerLabel) map.removeLayer(rulerLabel);
+        rulerStart = null;
+        rulerLine = null;
+        rulerLabel = null;
+    }
 
     // --- FERRAMENTA DE DESENHO (Leaflet.draw) ---
     const drawnItems = new L.FeatureGroup();
@@ -243,7 +281,7 @@
             marker: false,
             circlemarker: false
         },
-        edit: false // Edição será feita via popup customizado
+        edit: false
     });
     map.addControl(drawControl);
 
@@ -255,7 +293,7 @@
         const layer = e.layer;
         const latlngs = layer.getLatLngs();
         
-        map.addLayer(layer); // Adiciona temporariamente para mostrar o popup
+        map.addLayer(layer);
         window.tempRegionLayer = layer;
         window.tempRegionData = { type, latlngs };
 
@@ -287,10 +325,28 @@
         map.removeLayer(window.tempRegionLayer);
     };
 
-    // --- CLIQUES NO MAPA (Marcadores e Textos) ---
+    // --- CLIQUES NO MAPA (Marcadores, Textos e Régua) ---
     map.on('click', function(e) {
         if (isDrawing) return;
         const coord = e.latlng;
+
+        if (clickMode === 'ruler') {
+            if (!rulerStart) {
+                // Inicia a medição (Primeiro clique)
+                clearRuler();
+                rulerStart = coord;
+                rulerLine = L.polyline([rulerStart, rulerStart], {color: '#ffcc00', weight: 3, dashArray: '5, 5'}).addTo(map);
+                rulerLabel = L.tooltip({permanent: true, className: 'ruler-tooltip', direction: 'right', offset: [10, 0]})
+                    .setLatLng(rulerStart)
+                    .setContent('0.00 km')
+                    .addTo(map);
+            } else {
+                // Finaliza a medição (Segundo clique)
+                // A linha fica na tela até o próximo clique ou mudança de modo
+                rulerStart = null; 
+            }
+            return;
+        }
 
         if (clickMode === 'marker') {
             const popupContent = `
@@ -321,6 +377,21 @@
                 </div>
             `;
             L.popup().setLatLng(coord).setContent(popupContent).openOn(map);
+        }
+    });
+
+    // --- MOVIMENTO DO MOUSE (Atualização da Régua) ---
+    map.on('mousemove', function(e) {
+        if (clickMode === 'ruler' && rulerStart) {
+            const currentPos = e.latlng;
+            rulerLine.setLatLngs([rulerStart, currentPos]);
+            
+            // Calcula a distância euclidiana (pixels) e converte para km
+            const distPixels = map.distance(rulerStart, currentPos);
+            const distKm = (distPixels / PIXELS_PER_KM).toFixed(2);
+            
+            rulerLabel.setLatLng(currentPos);
+            rulerLabel.setContent(`${distKm} km`);
         }
     });
 
